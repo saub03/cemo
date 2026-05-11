@@ -304,6 +304,7 @@ class HelpModal(ModalScreen[None]):
 • [b]Space[/b] : 명령어 다중 선택/해제 (삭제 모드 시: 삭제 항목 선택)
 • [b]ESC[/b] : 팝업 닫기, 검색창 닫기, 삭제/다중 선택 취소
 • [b]방향키 (←/→)[/b] : 사이드바와 메인 테이블 간 포커스 이동
+• [b]F1~F10[/b] : 사이드바 대분류 빠른 이동 (F1: 모든 카테고리)
 • [b]Ctrl+`[/b] : 터미널 창을 최상단으로 호출"""
             yield Label(help_text)
             with Horizontal(id="help-button-container"):
@@ -392,6 +393,8 @@ class CommandFlowApp(App):
         self.delete_mode = False
         self.delete_selections = set()
         self.multi_selections = {}
+        self.current_sort_column = None
+        self.current_sort_reverse = False
 
     def compose(self) -> ComposeResult:
         """UI 위젯을 화면에 배치합니다."""
@@ -492,6 +495,9 @@ class CommandFlowApp(App):
                 cmd['tags'],
                 key=str(cmd_id)
             )
+        
+        if self.current_sort_column:
+            table.sort(self.current_sort_column, key=self._table_sort_key, reverse=self.current_sort_reverse)
 
     def action_add(self) -> None:
         """'a' 키 입력 시 새 명령어 추가 모달을 띄웁니다."""
@@ -665,8 +671,29 @@ class CommandFlowApp(App):
         # 카테고리 선택 후 메인 테이블(DataTable)로 자동 포커스 이동
         self.query_one("#cmd-table").focus()
 
+    @staticmethod
+    def _table_sort_key(value: any) -> any:
+        if isinstance(value, str):
+            # ID 컬럼 등의 체크박스 기호 제거 후 숫자 정렬 시도
+            clean_val = value.replace("[✓] ", "").replace("[x] ", "").replace("[ ] ", "")
+            if clean_val.isdigit():
+                return int(clean_val)
+            return clean_val.lower() # 다른 컬럼은 대소문자 무관하게 문자열 정렬
+        return value
+
+    @on(DataTable.HeaderSelected)
+    def on_header_selected(self, event: DataTable.HeaderSelected) -> None:
+        """테이블 헤더 클릭 시 해당 컬럼 기준으로 정렬합니다."""
+        if self.current_sort_column == event.column_key:
+            self.current_sort_reverse = not self.current_sort_reverse
+        else:
+            self.current_sort_column = event.column_key
+            self.current_sort_reverse = False
+            
+        event.data_table.sort(self.current_sort_column, key=self._table_sort_key, reverse=self.current_sort_reverse)
+
     def on_key(self, event: events.Key) -> None:
-        """ESC 키 동작 및 방향키 포커스 이동"""
+        """ESC 키 동작, 방향키 포커스 이동, F1~F10 카테고리 이동"""
         if event.key == "escape":
             if getattr(self, "delete_mode", False):
                 self.delete_mode = False
@@ -687,6 +714,21 @@ class CommandFlowApp(App):
         elif event.key == "left" and self.query_one("#cmd-table").has_focus:
             if not getattr(self, "delete_mode", False):
                 self.query_one("#sidebar").focus()
+                
+        if event.key and event.key.startswith("f") and event.key[1:].isdigit():
+            num = int(event.key[1:])
+                
+            tree = self.query_one("#sidebar", CategoryTree)
+            target_node = None
+            if num == 1:
+                target_node = tree.root
+            elif num > 1:
+                idx = num - 2
+                if 0 <= idx < len(tree.root.children):
+                    target_node = tree.root.children[idx]
+                    
+            if target_node:
+                tree.select_node(target_node)
 
     @on(DataTable.RowSelected)
     def on_row_selected(self, event: DataTable.RowSelected) -> None:
