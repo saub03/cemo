@@ -31,24 +31,6 @@ def bring_to_front():
         except Exception:
             pass
 
-def minimize_window():
-    """OS별 터미널 창 최소화 (복사 완료 시 호출)"""
-    system = platform.system()
-    if system == "Windows":
-        import ctypes
-        hwnd = ctypes.windll.kernel32.GetConsoleWindow()
-        if hwnd:
-            ctypes.windll.user32.ShowWindow(hwnd, 6) # SW_MINIMIZE (6)
-    elif system == "Darwin":
-        import subprocess
-        subprocess.run(["osascript", "-e", 'tell application "Terminal" to set miniaturized of front window to true'], check=False)
-    elif system == "Linux":
-        import subprocess
-        try:
-            subprocess.run(["wmctrl", "-r", "Command-Flow", "-b", "add,hidden"], check=False)
-        except Exception:
-            pass
-
 class VariableModal(ModalScreen[dict]):
     """동적 변수 입력을 받는 모달 창"""
     
@@ -91,13 +73,20 @@ class VariableModal(ModalScreen[dict]):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-submit":
-            result = {}
-            for var in self.variables:
-                val = self.query_one(f"#input-{var}", Input).value
-                result[var] = val
-            self.dismiss(result)
+            self._submit()
         elif event.button.id == "btn-cancel":
             self.dismiss(None)
+
+    @on(Input.Submitted)
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self._submit()
+
+    def _submit(self) -> None:
+        result = {}
+        for var in self.variables:
+            val = self.query_one(f"#input-{var}", Input).value
+            result[var] = val
+        self.dismiss(result)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -158,6 +147,55 @@ class AddCommandModal(ModalScreen[dict]):
             self.dismiss(result)
         elif event.button.id == "btn-add-cancel":
             self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+class SeparatorModal(ModalScreen[str]):
+    """다중 복사 시 사용할 구분자 입력 모달 창"""
+
+    CSS = """
+    SeparatorModal {
+        align: center middle;
+        background: rgba(0, 0, 0, 0.7);
+    }
+    #sep-modal-container {
+        width: 50;
+        height: auto;
+        background: $surface;
+        border: tall $primary;
+        padding: 1 2;
+    }
+    .sep-btn {
+        margin-top: 1;
+        margin-right: 1;
+    }
+    """
+
+    BINDINGS = [Binding("escape", "cancel", "취소")]
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="sep-modal-container"):
+            yield Label("다중 복사 구분자를 입력하세요 (기본값: 줄바꿈)")
+            yield Input(placeholder="예: \\n, ;, |, 등", id="input-sep", value="\\n")
+            with Horizontal():
+                yield Button("확인", variant="primary", id="btn-sep-submit", classes="sep-btn")
+                yield Button("취소", variant="error", id="btn-sep-cancel", classes="sep-btn")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-sep-submit":
+            self._submit()
+        elif event.button.id == "btn-sep-cancel":
+            self.dismiss(None)
+
+    @on(Input.Submitted, "#input-sep")
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        self._submit()
+
+    def _submit(self) -> None:
+        val = self.query_one("#input-sep", Input).value
+        val = val.replace("\\n", "\n") # 사용자가 \n을 문자로 입력했을 때 실제 개행문자로 변환
+        self.dismiss(val)
 
     def action_cancel(self) -> None:
         self.dismiss(None)
@@ -236,8 +274,7 @@ class HelpModal(ModalScreen[None]):
             yield Label("[b]📖 Command-Flow 도움말 및 단축키[/b]", classes="text-center")
             yield Label("") # 여백용 빈 라인
             help_text = """[b]🚀 주요 기능[/b]
-• [u]자동 복사 및 최소화[/u]: 명령어를 선택(Enter)하면 클립보드에 자동 복사되고 
-                창이 최소화됩니다.
+• [u]자동 복사[/u]: 명령어를 선택(Enter)하면 클립보드에 자동 복사됩니다.
 • [u]동적 변수 치환[/u]: 명령어에 '{{변수명}}'이 포함되어 있으면, 
                 복사 전 값을 입력받는 창이 뜹니다.
 • [u]퍼지 검색[/u]: 오타가 있거나 일부만 입력해도 똑똑하게 검색해 줍니다.
@@ -250,8 +287,9 @@ class HelpModal(ModalScreen[None]):
 • [b]e[/b] : 명령어 삭제 모드 진입/실행
 • [b]h[/b] : 도움말 보기
 • [b]q[/b] : 프로그램 종료
-• [b]Enter[/b] : 명령어 복사 (삭제 모드 시: 체크박스 선택 토글)
-• [b]ESC[/b] : 팝업 창 닫기, 검색창 닫기, 삭제 모드 취소
+• [b]Enter[/b] : 명령어 복사 (단일 복사 / 다중 선택 시 다중 복사)
+• [b]Space[/b] : 명령어 다중 선택/해제 (삭제 모드 시: 삭제 항목 선택)
+• [b]ESC[/b] : 팝업 닫기, 검색창 닫기, 삭제/다중 선택 취소
 • [b]방향키 (←/→)[/b] : 사이드바와 메인 테이블 간 포커스 이동
 • [b]Ctrl+`[/b] : 터미널 창을 최상단으로 호출"""
             yield Label(help_text)
@@ -304,6 +342,17 @@ class CommandFlowApp(App):
     #search-container.-visible {
         display: block;
     }
+    #multi-select-container {
+        dock: top;
+        height: 3;
+        display: none;
+        background: $panel;
+        padding-left: 2;
+        padding-top: 1;
+    }
+    #multi-select-container.-visible {
+        display: block;
+    }
     #cmd-table {
         height: 1fr;
     }
@@ -316,6 +365,7 @@ class CommandFlowApp(App):
         Binding("a", "add", "추가"),
         Binding("e", "manage", "관리(삭제)"),
         Binding("h", "help", "도움말"),
+        Binding("space", "toggle_multi_select", "다중 선택"),
     ]
 
     def __init__(self):
@@ -327,6 +377,7 @@ class CommandFlowApp(App):
         self.current_category = "모든 카테고리"
         self.delete_mode = False
         self.delete_selections = set()
+        self.multi_selections = {}
 
     def compose(self) -> ComposeResult:
         """UI 위젯을 화면에 배치합니다."""
@@ -336,6 +387,8 @@ class CommandFlowApp(App):
             with Vertical(id="main-content"):
                 with Horizontal(id="search-container"):
                     yield SearchInput(placeholder="명령어, 설명, 태그 검색... (퍼지 검색)", id="search-input")
+                with Horizontal(id="multi-select-container"):
+                    yield Label("", id="multi-select-label")
                 yield DataTable(id="cmd-table", cursor_type="row")
         yield Footer()
 
@@ -393,6 +446,8 @@ class CommandFlowApp(App):
             cmd_id = cmd['id']
             if getattr(self, "delete_mode", False):
                 id_display = f"[{'x' if cmd_id in self.delete_selections else ' '}] {cmd_id}"
+            elif getattr(self, "multi_selections", None) and cmd_id in self.multi_selections:
+                id_display = f"[✓] {cmd_id}"
             else:
                 id_display = str(cmd_id)
                 
@@ -429,7 +484,9 @@ class CommandFlowApp(App):
         if not self.delete_mode:
             self.delete_mode = True
             self.delete_selections = set()
-            self.notify("삭제 모드: Enter로 삭제할 항목 선택 후, e를 다시 누르세요. (ESC: 취소)", timeout=5)
+            self.multi_selections.clear()
+            self._update_multi_select_ui()
+            self.notify("삭제 모드: Space로 삭제할 항목 선택 후, e를 다시 누르세요. (ESC: 취소)", timeout=5)
             self._refresh_current_table()
             self.query_one("#cmd-table").focus()
         else:
@@ -447,6 +504,7 @@ class CommandFlowApp(App):
                     self.notify(f"{success_count}개의 명령어가 성공적으로 삭제되었습니다.", title="삭제 완료")
                     self.delete_mode = False
                     self.delete_selections.clear()
+                    self._update_multi_select_ui()
                     
                     # 대분류가 모두 지워졌을 수 있으므로 트리 갱신
                     tree = self.query_one("#sidebar", Tree)
@@ -477,6 +535,74 @@ class CommandFlowApp(App):
     def action_help(self) -> None:
         """'h' 키 입력 시 도움말 모달을 띄웁니다."""
         self.push_screen(HelpModal())
+
+    def action_toggle_multi_select(self) -> None:
+        """Space 입력 시 다중 복사 및 삭제를 위한 명령어 선택 토글"""
+        table = self.query_one("#cmd-table", DataTable)
+        if not table.has_focus or not table.row_count:
+            return
+        
+        try:
+            cell_key = table.coordinate_to_cell_key(table.cursor_coordinate)
+            row_key = cell_key[0] if isinstance(cell_key, tuple) else cell_key.row_key
+            cmd_id = int(row_key.value)
+            
+            if getattr(self, "delete_mode", False):
+                if cmd_id in self.delete_selections:
+                    self.delete_selections.remove(cmd_id)
+                    table.update_cell(row_key, "id", f"[ ] {cmd_id}")
+                else:
+                    self.delete_selections.add(cmd_id)
+                    table.update_cell(row_key, "id", f"[x] {cmd_id}")
+            else:
+                row_data = table.get_row(row_key)
+                command_str = row_data[2] # 명령어 컬럼
+                if cmd_id in self.multi_selections:
+                    del self.multi_selections[cmd_id]
+                    table.update_cell(row_key, "id", str(cmd_id))
+                else:
+                    self.multi_selections[cmd_id] = command_str
+                    table.update_cell(row_key, "id", f"[✓] {cmd_id}")
+                
+            self._update_multi_select_ui()
+        except Exception:
+            pass
+
+    def _update_multi_select_ui(self) -> None:
+        container = self.query_one("#multi-select-container")
+        label = self.query_one("#multi-select-label", Label)
+        
+        if getattr(self, "delete_mode", False):
+            if self.delete_selections:
+                container.add_class("-visible")
+                ids = ", ".join(str(k) for k in self.delete_selections)
+                label.update(f"🗑️ [b]삭제 대기 ID:[/b] {ids}  (삭제 실행: 'e' 키)")
+            else:
+                container.remove_class("-visible")
+        else:
+            if self.multi_selections:
+                container.add_class("-visible")
+                ids = ", ".join(str(k) for k in self.multi_selections.keys())
+                label.update(f"🛒 [b]선택된 ID:[/b] {ids}  (다중 복사 실행: 'Enter' 키)")
+            else:
+                container.remove_class("-visible")
+
+    def _execute_multi_copy(self) -> None:
+        """다중 선택된 명령어 복사 진행"""
+        if not self.multi_selections:
+            return
+        
+        def check_separator(sep: str | None) -> None:
+            if sep is not None:
+                combined_cmds = sep.join(self.multi_selections.values())
+                # 다중 복사에도 동적 변수가 포함되어 있다면 한 번에 입력받음
+                self._handle_copy_with_variables(combined_cmds)
+                
+                self.multi_selections.clear()
+                self._update_multi_select_ui()
+                self._refresh_current_table()
+
+        self.push_screen(SeparatorModal(), check_separator)
 
     @on(Input.Changed, "#search-input")
     def on_search_changed(self, event: Input.Changed) -> None:
@@ -510,13 +636,21 @@ class CommandFlowApp(App):
         self.query_one("#cmd-table").focus()
 
     def on_key(self, event: events.Key) -> None:
-        """ESC 키 삭제 모드 취소 및 좌/우 방향키 포커스 이동"""
-        if event.key == "escape" and getattr(self, "delete_mode", False):
-            self.delete_mode = False
-            self.delete_selections.clear()
-            self.notify("삭제 모드가 취소되었습니다.")
-            self._refresh_current_table()
-            return
+        """ESC 키 동작 및 방향키 포커스 이동"""
+        if event.key == "escape":
+            if getattr(self, "delete_mode", False):
+                self.delete_mode = False
+                self.delete_selections.clear()
+                self._update_multi_select_ui()
+                self.notify("삭제 모드가 취소되었습니다.")
+                self._refresh_current_table()
+                return
+            elif getattr(self, "multi_selections", False):
+                self.multi_selections.clear()
+                self._update_multi_select_ui()
+                self._refresh_current_table()
+                self.notify("다중 선택이 취소되었습니다.")
+                return
 
         if event.key == "right" and self.query_one("#sidebar").has_focus:
             self.query_one("#cmd-table").focus()
@@ -526,49 +660,47 @@ class CommandFlowApp(App):
 
     @on(DataTable.RowSelected)
     def on_row_selected(self, event: DataTable.RowSelected) -> None:
-        """테이블 행 선택 시 동작 (삭제 모드 시 선택 토글, 기본 모드 시 복사)"""
+        """테이블 행 선택 시 동작 (기본 모드 시 복사)"""
         if getattr(self, "delete_mode", False):
-            cmd_id = int(event.row_key.value)
-            if cmd_id in self.delete_selections:
-                self.delete_selections.remove(cmd_id)
-            else:
-                self.delete_selections.add(cmd_id)
+            return
             
-            new_display = f"[{'x' if cmd_id in self.delete_selections else ' '}] {cmd_id}"
-            event.data_table.update_cell(event.row_key, "id", new_display)
+        if self.multi_selections:
+            self._execute_multi_copy()
             return
 
         row_data = event.data_table.get_row(event.row_key)
         command_str = row_data[2]  # "명령어" 컬럼 인덱스
         
+        self._handle_copy_with_variables(command_str)
+
+    def _handle_copy_with_variables(self, command_str: str) -> None:
+        """문자열 내 동적 변수를 파싱하여 팝업을 띄우거나 바로 복사하는 헬퍼 메서드"""
         # 정규식을 이용해 {{변수}} 추출
         variables = re.findall(r'\{\{(.*?)\}\}', command_str)
         
-        if variables:
-            # 중복 변수 제거 (순서 유지)
-            seen = set()
-            unique_vars = [x for x in variables if not (x in seen or seen.add(x))]
-            
-            def check_modal_result(result: dict | None) -> None:
-                if result is not None:
-                    final_cmd = command_str
-                    for k, v in result.items():
-                        # {{변수}}를 입력받은 값으로 치환
-                        final_cmd = final_cmd.replace(f"{{{{{k}}}}}", v)
-                    self.copy_to_clipboard(final_cmd)
-                    
-            # 변수 입력 모달 띄우기
-            self.push_screen(VariableModal(unique_vars), check_modal_result)
-        else:
-            # 변수가 없으면 바로 복사
+        if not variables:
             self.copy_to_clipboard(command_str)
+            return
+            
+        # 중복 변수 제거 (순서 유지)
+        seen = set()
+        unique_vars = [x for x in variables if not (x in seen or seen.add(x))]
+        
+        def check_modal_result(result: dict | None) -> None:
+            if result is not None:
+                final_cmd = command_str
+                for k, v in result.items():
+                    final_cmd = final_cmd.replace(f"{{{{{k}}}}}", v)
+                self.copy_to_clipboard(final_cmd)
+                
+        # 변수 입력 모달 띄우기
+        self.push_screen(VariableModal(unique_vars), check_modal_result)
 
     def copy_to_clipboard(self, text: str) -> None:
         """명령어를 클립보드에 복사하고 우측 하단에 스낵바 알림을 띄움"""
         try:
             pyperclip.copy(text)
             self.notify(f"[{text}]", title="클립보드에 복사되었습니다!")
-            minimize_window()
         except Exception as e:
             self.notify(f"복사 실패: {e}", title="오류", severity="error")
 
