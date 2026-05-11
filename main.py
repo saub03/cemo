@@ -19,7 +19,7 @@ def bring_to_front():
         import ctypes
         hwnd = ctypes.windll.kernel32.GetConsoleWindow()
         if hwnd:
-            ctypes.windll.user32.ShowWindow(hwnd, 5) # SW_SHOW
+            ctypes.windll.user32.ShowWindow(hwnd, 9) # SW_RESTORE (9)
             ctypes.windll.user32.SetForegroundWindow(hwnd)
     elif system == "Darwin":
         import subprocess
