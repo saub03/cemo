@@ -99,7 +99,7 @@ class DatabaseManager:
             return [dict(row) for row in cursor.fetchall()]
 
 if __name__ == "__main__":
-    # 단독 실행 시 DB 초기화 및 더미 데이터 삽입 테스트
+    # 단독 실행 시 DB 초기화 및 더미 데이터 삽입 테스트 
     db = DatabaseManager()
     db.init_db()
     if db.insert_dummy_data():
