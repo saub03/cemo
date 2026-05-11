@@ -12,6 +12,19 @@ from textual.screen import ModalScreen
 from textual import on, events
 from database import DatabaseManager
 
+class CategoryTree(Tree):
+    """사이드바 전용 카테고리 트리 (Enter 입력 시 펼침 토글 방지)"""
+    
+    BINDINGS = [
+        Binding("enter", "custom_select", "선택 및 이동", show=False),
+        # Space는 Textual 기본 설정(toggle_node)으로 자연스럽게 접기/펼치기가 작동합니다.
+    ]
+
+    def action_custom_select(self) -> None:
+        """Enter 키를 눌렀을 때 토글을 방지하고 선택 이벤트(NodeSelected)만 발생시킵니다."""
+        if self.cursor_node is not None:
+            self.post_message(self.NodeSelected(self.cursor_node))
+
 def bring_to_front():
     """OS별 터미널 창 최상단 활성화 (글로벌 단축키 트리거 시 호출)"""
     system = platform.system()
@@ -374,7 +387,8 @@ class CommandFlowApp(App):
         self.db = DatabaseManager()
         self.db.init_db()
         self.db.insert_dummy_data()
-        self.current_category = "모든 카테고리"
+        self.current_large_category = None
+        self.current_medium_category = None
         self.delete_mode = False
         self.delete_selections = set()
         self.multi_selections = {}
@@ -383,7 +397,7 @@ class CommandFlowApp(App):
         """UI 위젯을 화면에 배치합니다."""
         yield Header(show_clock=True)
         with Horizontal():
-            yield Tree("모든 카테고리", id="sidebar")
+            yield CategoryTree("모든 카테고리", id="sidebar")
             with Vertical(id="main-content"):
                 with Horizontal(id="search-container"):
                     yield SearchInput(placeholder="명령어, 설명, 태그 검색... (퍼지 검색)", id="search-input")
@@ -400,11 +414,7 @@ class CommandFlowApp(App):
         self._start_hotkey_thread()
 
         # 1. 사이드바 트리 초기화
-        tree = self.query_one("#sidebar", Tree)
-        tree.root.expand()
-        categories = self.db.get_large_categories()
-        for cat in categories:
-            tree.root.add_leaf(cat)
+        self._build_tree()
             
         # 2. 메인 데이터 테이블 컬럼 설정
         table = self.query_one("#cmd-table", DataTable)
@@ -417,13 +427,32 @@ class CommandFlowApp(App):
         # 3. 최초 화면에 모든 명령어 데이터 로드
         self._refresh_current_table()
 
+    def _build_tree(self) -> None:
+        """데이터베이스에서 카테고리를 읽어와 사이드바 트리를 재구성합니다."""
+        tree = self.query_one("#sidebar", CategoryTree)
+        tree.clear()
+        tree.root.expand()
+        
+        tree_data = self.db.get_category_tree()
+        for l_cat, m_cats in tree_data.items():
+            # 대분류 노드 추가
+            l_node = tree.root.add(l_cat, data={"large": l_cat, "medium": None})
+            for m_cat in m_cats:
+                if m_cat: # 중분류가 존재하는 경우만
+                    l_node.add_leaf(m_cat, data={"large": l_cat, "medium": m_cat})
+
     def _refresh_current_table(self) -> None:
         """현재 카테고리와 검색어를 기준으로 테이블 데이터를 갱신합니다."""
         query = self.query_one("#search-input", Input).value.strip().lower()
-        if self.current_category == "모든 카테고리":
-            target_commands = self.db.get_all_commands()
-        else:
-            target_commands = self.db.get_commands_by_category(self.current_category)
+        
+        all_commands = self.db.get_all_commands()
+        target_commands = []
+        for cmd in all_commands:
+            if self.current_large_category and cmd['large_category'] != self.current_large_category:
+                continue
+            if self.current_medium_category and cmd['medium_category'] != self.current_medium_category:
+                continue
+            target_commands.append(cmd)
         
         if not query:
             self._populate_table(target_commands)
@@ -451,9 +480,13 @@ class CommandFlowApp(App):
             else:
                 id_display = str(cmd_id)
                 
+            cat_display = f"{cmd['large_category']} > {cmd['medium_category']}"
+            if cmd.get('small_category'):
+                cat_display += f" > {cmd['small_category']}"
+
             table.add_row(
                 id_display,
-                f"{cmd['large_category']} > {cmd['medium_category']}",
+                cat_display,
                 cmd['command'],
                 cmd['description'],
                 cmd['tags'],
@@ -467,12 +500,8 @@ class CommandFlowApp(App):
                 self.db.insert_command(**result)
                 self.notify("새 명령어가 성공적으로 추가되었습니다!", title="추가 완료")
                 
-                # 트리 초기화 및 재구성 (새로운 대분류가 추가됐을 수 있으므로)
-                tree = self.query_one("#sidebar", Tree)
-                tree.clear()
-                categories = self.db.get_large_categories()
-                for cat in categories:
-                    tree.root.add_leaf(cat)
+                # 트리 재구성
+                self._build_tree()
                 
                 # 테이블 화면 갱신
                 self._refresh_current_table()
@@ -506,12 +535,8 @@ class CommandFlowApp(App):
                     self.delete_selections.clear()
                     self._update_multi_select_ui()
                     
-                    # 대분류가 모두 지워졌을 수 있으므로 트리 갱신
-                    tree = self.query_one("#sidebar", Tree)
-                    tree.clear()
-                    categories = self.db.get_large_categories()
-                    for cat in categories:
-                        tree.root.add_leaf(cat)
+                    # 트리 재구성
+                    self._build_tree()
                         
                     self._refresh_current_table()
 
@@ -622,8 +647,13 @@ class CommandFlowApp(App):
     @on(Tree.NodeSelected)
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
         """사이드바 트리 노드 선택 시 카테고리 필터링"""
-        label = str(event.node.label)
-        self.current_category = label
+        node_data = event.node.data
+        if node_data is None: # 루트 노드 ("모든 카테고리")
+            self.current_large_category = None
+            self.current_medium_category = None
+        else:
+            self.current_large_category = node_data.get("large")
+            self.current_medium_category = node_data.get("medium")
         
         # 카테고리 변경 시 기존 검색어가 있다면 초기화
         search_input = self.query_one("#search-input", Input)

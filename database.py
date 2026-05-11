@@ -90,6 +90,19 @@ class DatabaseManager:
             cursor.execute('SELECT DISTINCT large_category FROM commands ORDER BY large_category ASC')
             return [row[0] for row in cursor.fetchall()]
 
+    def get_category_tree(self):
+        """대분류와 중분류의 계층 구조를 딕셔너리로 반환"""
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute('SELECT DISTINCT large_category, medium_category FROM commands ORDER BY large_category ASC, medium_category ASC')
+            tree = {}
+            for l_cat, m_cat in cursor.fetchall():
+                if l_cat not in tree:
+                    tree[l_cat] = []
+                if m_cat and m_cat not in tree[l_cat]:
+                    tree[l_cat].append(m_cat)
+            return tree
+
     def get_commands_by_category(self, large_category):
         """특정 대분류의 명령어 데이터를 가져옴"""
         with self.get_connection() as conn:
